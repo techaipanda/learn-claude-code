@@ -96,3 +96,5 @@ python agents/s03_todo_write.py
 1. `Refactor the file hello.py: add type hints, docstrings, and a main guard`
 2. `Create a Python package with __init__.py, utils.py, and tests/test_utils.py`
 3. `Review all Python files and fix any style issues`
+
+1. 阅读 s01 并总结内容 2. 阅读 s02 并总结内容 3. 阅读 s03 并总结内容
