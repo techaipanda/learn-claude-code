@@ -45,26 +45,74 @@ SYSTEM = f"You are a coding agent at {WORKDIR}. Use task tools to plan and track
 
 # -- TaskManager: CRUD with dependency graph, persisted as JSON files --
 class TaskManager:
+    """
+    任务管理器：基于文件的持久化任务系统，支持依赖图。
+
+    每个任务保存为 .tasks/task_{id}.json 文件，
+    包含状态、描述、所有者、blockedBy（依赖关系）等字段。
+    任务在文件系统层面持久化，跨会话保持。
+    """
+
     def __init__(self, tasks_dir: Path):
+        """
+        初始化任务管理器，创建任务目录。
+
+        Args:
+            tasks_dir: 任务文件存储目录
+        """
         self.dir = tasks_dir
         self.dir.mkdir(exist_ok=True)
         self._next_id = self._max_id() + 1
 
     def _max_id(self) -> int:
+        """
+        获取当前最大任务 ID。
+
+        Returns:
+            最大任务 ID，如果无任务则返回 0
+        """
         ids = [int(f.stem.split("_")[1]) for f in self.dir.glob("task_*.json")]
         return max(ids) if ids else 0
 
     def _load(self, task_id: int) -> dict:
+        """
+        从文件加载指定任务。
+
+        Args:
+            task_id: 任务 ID
+
+        Returns:
+            任务字典对象
+
+        Raises:
+            ValueError: 当任务文件不存在时
+        """
         path = self.dir / f"task_{task_id}.json"
         if not path.exists():
             raise ValueError(f"Task {task_id} not found")
         return json.loads(path.read_text())
 
     def _save(self, task: dict):
+        """
+        保存任务到文件。
+
+        Args:
+            task: 任务字典对象，必须包含 id 字段
+        """
         path = self.dir / f"task_{task['id']}.json"
         path.write_text(json.dumps(task, indent=2, ensure_ascii=False))
 
     def create(self, subject: str, description: str = "") -> str:
+        """
+        创建新任务。
+
+        Args:
+            subject: 任务主题/标题
+            description: 可选的任务描述
+
+        Returns:
+            创建的任务 JSON 字符串
+        """
         task = {
             "id": self._next_id, "subject": subject, "description": description,
             "status": "pending", "blockedBy": [], "owner": "",
@@ -74,10 +122,31 @@ class TaskManager:
         return json.dumps(task, indent=2, ensure_ascii=False)
 
     def get(self, task_id: int) -> str:
+        """
+        获取任务详情。
+
+        Args:
+            task_id: 任务 ID
+
+        Returns:
+            任务 JSON 字符串
+        """
         return json.dumps(self._load(task_id), indent=2, ensure_ascii=False)
 
     def update(self, task_id: int, status: str = None,
                add_blocked_by: list = None, remove_blocked_by: list = None) -> str:
+        """
+        更新任务状态或依赖关系。
+
+        Args:
+            task_id: 任务 ID
+            status: 可选，新状态（pending/in_progress/completed）
+            add_blocked_by: 可选，添加依赖的任务 ID 列表
+            remove_blocked_by: 可选，移除依赖的任务 ID 列表
+
+        Returns:
+            更新后的任务 JSON 字符串
+        """
         task = self._load(task_id)
         if status:
             if status not in ("pending", "in_progress", "completed"):
@@ -93,6 +162,14 @@ class TaskManager:
         return json.dumps(task, indent=2, ensure_ascii=False)
 
     def _clear_dependency(self, completed_id: int):
+        """
+        清除已完成任务对其他任务的依赖。
+
+        当任务完成时，从所有其他任务的 blockedBy 列表中移除它。
+
+        Args:
+            completed_id: 已完成的任务 ID
+        """
         """Remove completed_id from all other tasks' blockedBy lists."""
         for f in self.dir.glob("task_*.json"):
             task = json.loads(f.read_text())
@@ -101,6 +178,12 @@ class TaskManager:
                 self._save(task)
 
     def list_all(self) -> str:
+        """
+        列出所有任务。
+
+        Returns:
+            格式化后的任务列表字符串
+        """
         tasks = []
         files = sorted(
             self.dir.glob("task_*.json"),
@@ -123,12 +206,34 @@ TASKS = TaskManager(TASKS_DIR)
 
 # -- Base tool implementations --
 def safe_path(p: str) -> Path:
+    """
+    将相对路径解析为绝对路径，并安全检查防止目录遍历攻击。
+
+    Args:
+        p: 相对路径字符串
+
+    Returns:
+        解析后的 Path 对象，确保在 WORKDIR 范围内
+
+    Raises:
+        ValueError: 当路径超出 WORKDIR 范围时
+    """
     path = (WORKDIR / p).resolve()
     if not path.is_relative_to(WORKDIR):
         raise ValueError(f"Path escapes workspace: {p}")
     return path
 
+
 def run_bash(command: str) -> str:
+    """
+    执行 bash 命令，支持安全性检查和超时控制。
+
+    Args:
+        command: 要执行的 shell 命令
+
+    Returns:
+        命令执行结果，超长截断至 50000 字符
+    """
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
@@ -140,7 +245,18 @@ def run_bash(command: str) -> str:
     except subprocess.TimeoutExpired:
         return "Error: Timeout (120s)"
 
+
 def run_read(path: str, limit: int = None) -> str:
+    """
+    读取文件内容，支持行数限制。
+
+    Args:
+        path: 文件路径
+        limit: 可选，限制返回的前 N 行
+
+    Returns:
+        文件内容字符串，超长截断至 50000 字符
+    """
     try:
         lines = safe_path(path).read_text().splitlines()
         if limit and limit < len(lines):
@@ -149,7 +265,18 @@ def run_read(path: str, limit: int = None) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+
 def run_write(path: str, content: str) -> str:
+    """
+    写入内容到文件，自动创建父目录。
+
+    Args:
+        path: 文件路径
+        content: 要写入的内容
+
+    Returns:
+        成功消息，包含写入字节数
+    """
     try:
         fp = safe_path(path)
         fp.parent.mkdir(parents=True, exist_ok=True)
@@ -158,7 +285,19 @@ def run_write(path: str, content: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+
 def run_edit(path: str, old_text: str, new_text: str) -> str:
+    """
+    在文件中替换指定的文本（仅替换第一次出现）。
+
+    Args:
+        path: 文件路径
+        old_text: 要替换的旧文本
+        new_text: 替换后的新文本
+
+    Returns:
+        成功消息或错误信息
+    """
     try:
         fp = safe_path(path)
         c = fp.read_text()
@@ -202,6 +341,15 @@ TOOLS = [
 
 
 def agent_loop(messages: list):
+    """
+    代理循环：集成基于文件的任务持久化系统。
+
+    任务通过文件系统持久化，跨会话保持。
+    支持任务依赖关系（blockedBy），完成时会自动解除依赖。
+
+    Args:
+        messages: 对话消息历史列表，会被直接修改
+    """
     while True:
         response = client.messages.create(
             model=MODEL, system=SYSTEM, messages=messages,

@@ -61,12 +61,35 @@ PRESERVE_RESULT_TOOLS = {"read_file"}
 
 
 def estimate_tokens(messages: list) -> int:
+    """
+    估算消息列表的 token 数量。
+
+    采用简化的估算方法：约 4 个字符等于 1 个 token。
+
+    Args:
+        messages: 对话消息历史列表
+
+    Returns:
+        估算的 token 数量
+    """
     """Rough token count: ~4 chars per token."""
     return len(str(messages)) // 4
 
 
 # -- Layer 1: micro_compact - replace old tool results with placeholders --
 def micro_compact(messages: list) -> list:
+    """
+    第一层压缩（微观压缩）：静默执行，每轮都运行。
+
+    将最近 3 次工具结果之外的旧工具结果替换为占位符，
+    保留 read_file 的结果（因为它们是参考资料）。
+
+    原理：压缩旧工具结果可以强迫代理重新读取文件，
+    而非依赖过时的上下文。
+
+    Args:
+        messages: 对话消息历史列表，会被直接修改
+    """
     # Collect (msg_index, part_index, tool_result_dict) for all tool_result entries
     tool_results = []
     for msg_idx, msg in enumerate(messages):
@@ -101,6 +124,18 @@ def micro_compact(messages: list) -> list:
 
 # -- Layer 2: auto_compact - save transcript, summarize, replace messages --
 def auto_compact(messages: list) -> list:
+    """
+    第二层压缩（自动压缩）：当 token 数量超过阈值时触发。
+
+    保存完整对话记录到 .transcripts/ 目录，
+    然后让 LLM 生成摘要，用摘要替换整个消息历史。
+
+    Args:
+        messages: 对话消息历史列表
+
+    Returns:
+        压缩后的消息列表（只包含摘要）
+    """
     # Save full transcript to disk
     TRANSCRIPT_DIR.mkdir(exist_ok=True)
     transcript_path = TRANSCRIPT_DIR / f"transcript_{int(time.time())}.jsonl"
@@ -129,12 +164,34 @@ def auto_compact(messages: list) -> list:
 
 # -- Tool implementations --
 def safe_path(p: str) -> Path:
+    """
+    将相对路径解析为绝对路径，并安全检查防止目录遍历攻击。
+
+    Args:
+        p: 相对路径字符串
+
+    Returns:
+        解析后的 Path 对象，确保在 WORKDIR 范围内
+
+    Raises:
+        ValueError: 当路径超出 WORKDIR 范围时
+    """
     path = (WORKDIR / p).resolve()
     if not path.is_relative_to(WORKDIR):
         raise ValueError(f"Path escapes workspace: {p}")
     return path
 
+
 def run_bash(command: str) -> str:
+    """
+    执行 bash 命令，支持安全性检查和超时控制。
+
+    Args:
+        command: 要执行的 shell 命令
+
+    Returns:
+        命令执行结果，超长截断至 50000 字符
+    """
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
@@ -146,7 +203,18 @@ def run_bash(command: str) -> str:
     except subprocess.TimeoutExpired:
         return "Error: Timeout (120s)"
 
+
 def run_read(path: str, limit: int = None) -> str:
+    """
+    读取文件内容，支持行数限制。
+
+    Args:
+        path: 文件路径
+        limit: 可选，限制返回的前 N 行
+
+    Returns:
+        文件内容字符串，超长截断至 50000 字符
+    """
     try:
         lines = safe_path(path).read_text().splitlines()
         if limit and limit < len(lines):
@@ -155,7 +223,18 @@ def run_read(path: str, limit: int = None) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+
 def run_write(path: str, content: str) -> str:
+    """
+    写入内容到文件，自动创建父目录。
+
+    Args:
+        path: 文件路径
+        content: 要写入的内容
+
+    Returns:
+        成功消息，包含写入字节数
+    """
     try:
         fp = safe_path(path)
         fp.parent.mkdir(parents=True, exist_ok=True)
@@ -164,7 +243,19 @@ def run_write(path: str, content: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+
 def run_edit(path: str, old_text: str, new_text: str) -> str:
+    """
+    在文件中替换指定的文本（仅替换第一次出现）。
+
+    Args:
+        path: 文件路径
+        old_text: 要替换的旧文本
+        new_text: 替换后的新文本
+
+    Returns:
+        成功消息或错误信息
+    """
     try:
         fp = safe_path(path)
         content = fp.read_text()
@@ -199,6 +290,16 @@ TOOLS = [
 
 
 def agent_loop(messages: list):
+    """
+    代理循环：三层压缩管道实现无限会话。
+
+    Layer 1（微观压缩）：每轮 LLM 调用前静默执行，替换旧工具结果
+    Layer 2（自动压缩）：token 超过阈值时自动触发，保存并摘要
+    Layer 3（手动压缩）：代理调用 compact 工具时立即触发
+
+    Args:
+        messages: 对话消息历史列表，会被直接修改
+    """
     while True:
         # Layer 1: micro_compact before each LLM call
         micro_compact(messages)

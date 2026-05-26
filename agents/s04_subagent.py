@@ -45,12 +45,34 @@ SUBAGENT_SYSTEM = f"You are a coding subagent at {WORKDIR}. Complete the given t
 
 # -- Tool implementations shared by parent and child --
 def safe_path(p: str) -> Path:
+    """
+    将相对路径解析为绝对路径，并安全检查防止目录遍历攻击。
+
+    Args:
+        p: 相对路径字符串
+
+    Returns:
+        解析后的 Path 对象，确保在 WORKDIR 范围内
+
+    Raises:
+        ValueError: 当路径超出 WORKDIR 范围时
+    """
     path = (WORKDIR / p).resolve()
     if not path.is_relative_to(WORKDIR):
         raise ValueError(f"Path escapes workspace: {p}")
     return path
 
+
 def run_bash(command: str) -> str:
+    """
+    执行 bash 命令，支持安全性检查和超时控制。
+
+    Args:
+        command: 要执行的 shell 命令
+
+    Returns:
+        命令执行结果，超长截断至 50000 字符
+    """
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
@@ -64,7 +86,18 @@ def run_bash(command: str) -> str:
     except (FileNotFoundError, OSError) as e:
         return f"Error: {e}"
 
+
 def run_read(path: str, limit: int = None) -> str:
+    """
+    读取文件内容，支持行数限制。
+
+    Args:
+        path: 文件路径
+        limit: 可选，限制返回的前 N 行
+
+    Returns:
+        文件内容字符串，超长截断至 50000 字符
+    """
     try:
         lines = safe_path(path).read_text().splitlines()
         if limit and limit < len(lines):
@@ -73,7 +106,18 @@ def run_read(path: str, limit: int = None) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+
 def run_write(path: str, content: str) -> str:
+    """
+    写入内容到文件，自动创建父目录。
+
+    Args:
+        path: 文件路径
+        content: 要写入的内容
+
+    Returns:
+        成功消息，包含写入字节数
+    """
     try:
         fp = safe_path(path)
         fp.parent.mkdir(parents=True, exist_ok=True)
@@ -82,7 +126,19 @@ def run_write(path: str, content: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+
 def run_edit(path: str, old_text: str, new_text: str) -> str:
+    """
+    在文件中替换指定的文本（仅替换第一次出现）。
+
+    Args:
+        path: 文件路径
+        old_text: 要替换的旧文本
+        new_text: 替换后的新文本
+
+    Returns:
+        成功消息或错误信息
+    """
     try:
         fp = safe_path(path)
         content = fp.read_text()
@@ -116,6 +172,19 @@ CHILD_TOOLS = [
 
 # -- Subagent: fresh context, filtered tools, summary-only return --
 def run_subagent(prompt: str) -> str:
+    """
+    启动子代理执行任务：独立上下文 + 独立消息历史。
+
+    子代理获得全新的 messages 列表（只有传入的 prompt），
+    与父代理共享文件系统，但不共享对话历史。
+    任务完成后只返回摘要文本，子代理的完整上下文被丢弃。
+
+    Args:
+        prompt: 给子代理的任务描述
+
+    Returns:
+        子代理执行后的最终文本摘要
+    """
     sub_messages = [{"role": "user", "content": prompt}]  # fresh context
     for _ in range(30):  # safety limit
         response = client.messages.create(
@@ -144,6 +213,15 @@ PARENT_TOOLS = CHILD_TOOLS + [
 
 
 def agent_loop(messages: list):
+    """
+    父代理循环：支持通过 task 工具派生子代理。
+
+    子代理在独立线程中运行，拥有独立的消息上下文。
+    任务完成后返回摘要给父代理，实现上下文隔离。
+
+    Args:
+        messages: 对话消息历史列表，会被直接修改
+    """
     while True:
         response = client.messages.create(
             model=MODEL, system=SYSTEM, messages=messages,

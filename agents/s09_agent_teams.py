@@ -76,12 +76,38 @@ VALID_MSG_TYPES = {
 
 # -- MessageBus: JSONL inbox per teammate --
 class MessageBus:
+    """
+    消息总线：基于 JSONL 文件的异步消息传递系统。
+
+    每个团队成员有独立的收件箱文件（{name}.jsonl），
+    通过追加写入实现异步通信，消息不会丢失。
+    """
+
     def __init__(self, inbox_dir: Path):
+        """
+        初始化消息总线，创建收件箱目录。
+
+        Args:
+            inbox_dir: 收件箱文件目录
+        """
         self.dir = inbox_dir
         self.dir.mkdir(parents=True, exist_ok=True)
 
     def send(self, sender: str, to: str, content: str,
              msg_type: str = "message", extra: dict = None) -> str:
+        """
+        发送消息到指定成员的收件箱。
+
+        Args:
+            sender: 发送者名称
+            to: 接收者名称
+            content: 消息内容
+            msg_type: 消息类型（message/broadcast/shutdown_request等）
+            extra: 可选的额外字段
+
+        Returns:
+            发送结果字符串
+        """
         if msg_type not in VALID_MSG_TYPES:
             return f"Error: Invalid type '{msg_type}'. Valid: {VALID_MSG_TYPES}"
         msg = {
@@ -98,6 +124,15 @@ class MessageBus:
         return f"Sent {msg_type} to {to}"
 
     def read_inbox(self, name: str) -> list:
+        """
+        读取并清空指定成员的收件箱。
+
+        Args:
+            name: 成员名称
+
+        Returns:
+            消息列表
+        """
         inbox_path = self.dir / f"{name}.jsonl"
         if not inbox_path.exists():
             return []
@@ -109,6 +144,17 @@ class MessageBus:
         return messages
 
     def broadcast(self, sender: str, content: str, teammates: list) -> str:
+        """
+        广播消息给所有团队成员（除发送者外）。
+
+        Args:
+            sender: 发送者名称
+            content: 消息内容
+            teammates: 团队成员名称列表
+
+        Returns:
+            发送计数字符串
+        """
         count = 0
         for name in teammates:
             if name != sender:
@@ -122,7 +168,22 @@ BUS = MessageBus(INBOX_DIR)
 
 # -- TeammateManager: persistent named agents with config.json --
 class TeammateManager:
+    """
+    队友管理器：持久化命名代理的管理器。
+
+    支持：
+    - 生成新的队友线程
+    - 追踪队友状态（working/idle/shutdown）
+    - 持久化团队配置到 config.json
+    """
+
     def __init__(self, team_dir: Path):
+        """
+        初始化队友管理器，加载或创建团队配置。
+
+        Args:
+            team_dir: 团队配置目录
+        """
         self.dir = team_dir
         self.dir.mkdir(exist_ok=True)
         self.config_path = self.dir / "config.json"
@@ -130,20 +191,42 @@ class TeammateManager:
         self.threads = {}
 
     def _load_config(self) -> dict:
+        """从文件加载团队配置，如果不存在则返回默认配置"""
         if self.config_path.exists():
             return json.loads(self.config_path.read_text())
         return {"team_name": "default", "members": []}
 
     def _save_config(self):
+        """保存团队配置到文件"""
         self.config_path.write_text(json.dumps(self.config, indent=2))
 
     def _find_member(self, name: str) -> dict:
+        """
+        查找指定名称的团队成员。
+
+        Args:
+            name: 成员名称
+
+        Returns:
+            成员字典对象，如果不存在则返回 None
+        """
         for m in self.config["members"]:
             if m["name"] == name:
                 return m
         return None
 
     def spawn(self, name: str, role: str, prompt: str) -> str:
+        """
+        生成新的队友线程。
+
+        Args:
+            name: 队友名称
+            role: 角色描述
+            prompt: 初始任务提示
+
+        Returns:
+            生成结果字符串
+        """
         member = self._find_member(name)
         if member:
             if member["status"] not in ("idle", "shutdown"):
@@ -164,6 +247,14 @@ class TeammateManager:
         return f"Spawned '{name}' (role: {role})"
 
     def _teammate_loop(self, name: str, role: str, prompt: str):
+        """
+        队友的主循环：持续处理任务直到完成或收到关闭请求。
+
+        Args:
+            name: 队友名称
+            role: 角色描述
+            prompt: 初始任务
+        """
         sys_prompt = (
             f"You are '{name}', role: {role}, at {WORKDIR}. "
             f"Use send_message to communicate. Complete your task."
@@ -204,6 +295,17 @@ class TeammateManager:
             self._save_config()
 
     def _exec(self, sender: str, tool_name: str, args: dict) -> str:
+        """
+        执行队友的工具调用。
+
+        Args:
+            sender: 调用者名称
+            tool_name: 工具名称
+            args: 工具参数
+
+        Returns:
+            工具执行结果字符串
+        """
         # these base tools are unchanged from s02
         if tool_name == "bash":
             return _run_bash(args["command"])
@@ -220,6 +322,7 @@ class TeammateManager:
         return f"Unknown tool: {tool_name}"
 
     def _teammate_tools(self) -> list:
+        """获取队友可用的工具列表"""
         # these base tools are unchanged from s02
         return [
             {"name": "bash", "description": "Run a shell command.",
@@ -237,6 +340,12 @@ class TeammateManager:
         ]
 
     def list_all(self) -> str:
+        """
+        列出所有团队成员及其状态。
+
+        Returns:
+            格式化的团队成员列表字符串
+        """
         if not self.config["members"]:
             return "No teammates."
         lines = [f"Team: {self.config['team_name']}"]
@@ -245,6 +354,12 @@ class TeammateManager:
         return "\n".join(lines)
 
     def member_names(self) -> list:
+        """
+        获取所有团队成员名称列表。
+
+        Returns:
+            成员名称列表
+        """
         return [m["name"] for m in self.config["members"]]
 
 
@@ -253,6 +368,18 @@ TEAM = TeammateManager(TEAM_DIR)
 
 # -- Base tool implementations (these base tools are unchanged from s02) --
 def _safe_path(p: str) -> Path:
+    """
+    将相对路径解析为绝对路径，并安全检查防止目录遍历攻击。
+
+    Args:
+        p: 相对路径字符串
+
+    Returns:
+        解析后的 Path 对象，确保在 WORKDIR 范围内
+
+    Raises:
+        ValueError: 当路径超出 WORKDIR 范围时
+    """
     path = (WORKDIR / p).resolve()
     if not path.is_relative_to(WORKDIR):
         raise ValueError(f"Path escapes workspace: {p}")
@@ -260,6 +387,15 @@ def _safe_path(p: str) -> Path:
 
 
 def _run_bash(command: str) -> str:
+    """
+    执行 bash 命令，支持安全性检查和超时控制。
+
+    Args:
+        command: 要执行的 shell 命令
+
+    Returns:
+        命令执行结果，超长截断至 50000 字符
+    """
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot"]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
@@ -275,6 +411,16 @@ def _run_bash(command: str) -> str:
 
 
 def _run_read(path: str, limit: int = None) -> str:
+    """
+    读取文件内容，支持行数限制。
+
+    Args:
+        path: 文件路径
+        limit: 可选，限制返回的前 N 行
+
+    Returns:
+        文件内容字符串，超长截断至 50000 字符
+    """
     try:
         lines = _safe_path(path).read_text().splitlines()
         if limit and limit < len(lines):
@@ -285,6 +431,16 @@ def _run_read(path: str, limit: int = None) -> str:
 
 
 def _run_write(path: str, content: str) -> str:
+    """
+    写入内容到文件，自动创建父目录。
+
+    Args:
+        path: 文件路径
+        content: 要写入的内容
+
+    Returns:
+        成功消息，包含写入字节数
+    """
     try:
         fp = _safe_path(path)
         fp.parent.mkdir(parents=True, exist_ok=True)
@@ -295,6 +451,17 @@ def _run_write(path: str, content: str) -> str:
 
 
 def _run_edit(path: str, old_text: str, new_text: str) -> str:
+    """
+    在文件中替换指定的文本（仅替换第一次出现）。
+
+    Args:
+        path: 文件路径
+        old_text: 要替换的旧文本
+        new_text: 替换后的新文本
+
+    Returns:
+        成功消息或错误信息
+    """
     try:
         fp = _safe_path(path)
         c = fp.read_text()
@@ -313,7 +480,7 @@ TOOL_HANDLERS = {
     "write_file":      lambda **kw: _run_write(kw["path"], kw["content"]),
     "edit_file":       lambda **kw: _run_edit(kw["path"], kw["old_text"], kw["new_text"]),
     "spawn_teammate":  lambda **kw: TEAM.spawn(kw["name"], kw["role"], kw["prompt"]),
-    "list_teammates":  lambda **kw: TEAM.list_all(),
+    "list_teammates":   lambda **kw: TEAM.list_all(),
     "send_message":    lambda **kw: BUS.send("lead", kw["to"], kw["content"], kw.get("msg_type", "message")),
     "read_inbox":      lambda **kw: json.dumps(BUS.read_inbox("lead"), indent=2),
     "broadcast":       lambda **kw: BUS.broadcast("lead", kw["content"], TEAM.member_names()),
@@ -343,6 +510,15 @@ TOOLS = [
 
 
 def agent_loop(messages: list):
+    """
+    代理循环：团队领导者的代理循环。
+
+    支持通过 spawn_teammate 生成持久队友，
+    队友通过消息总线异步通信。
+
+    Args:
+        messages: 对话消息历史列表，会被直接修改
+    """
     while True:
         inbox = BUS.read_inbox("lead")
         if inbox:

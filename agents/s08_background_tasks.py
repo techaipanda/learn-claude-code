@@ -48,12 +48,34 @@ SYSTEM = f"You are a coding agent at {WORKDIR}. Use background_run for long-runn
 
 # -- BackgroundManager: threaded execution + notification queue --
 class BackgroundManager:
+    """
+    后台任务管理器：在线程中执行长时间运行的命令。
+
+    任务在独立线程中运行，不会阻塞主代理循环。
+    任务完成后，结果会被放入通知队列，供下次 LLM 调用时注入。
+    """
+
     def __init__(self):
+        """
+        初始化后台任务管理器：
+        - tasks: 存储所有任务状态
+        - _notification_queue: 存放已完成任务的待处理通知
+        - _lock: 线程安全锁
+        """
         self.tasks = {}  # task_id -> {status, result, command}
         self._notification_queue = []  # completed task results
         self._lock = threading.Lock()
 
     def run(self, command: str) -> str:
+        """
+        启动后台任务，立即返回任务 ID。
+
+        Args:
+            command: 要执行的 shell 命令
+
+        Returns:
+            包含任务 ID 的启动消息
+        """
         """Start a background thread, return task_id immediately."""
         task_id = str(uuid.uuid4())[:8]
         self.tasks[task_id] = {"status": "running", "result": None, "command": command}
@@ -64,6 +86,13 @@ class BackgroundManager:
         return f"Background task {task_id} started: {command[:80]}"
 
     def _execute(self, task_id: str, command: str):
+        """
+        线程目标：执行子进程，捕获输出，推送到通知队列。
+
+        Args:
+            task_id: 任务唯一标识符
+            command: 要执行的命令
+        """
         """Thread target: run subprocess, capture output, push to queue."""
         try:
             r = subprocess.run(
@@ -89,6 +118,15 @@ class BackgroundManager:
             })
 
     def check(self, task_id: str = None) -> str:
+        """
+        检查任务状态。
+
+        Args:
+            task_id: 可选的任务 ID。如果不提供则列出所有任务。
+
+        Returns:
+            任务状态字符串
+        """
         """Check status of one task or list all."""
         if task_id:
             t = self.tasks.get(task_id)
@@ -101,6 +139,12 @@ class BackgroundManager:
         return "\n".join(lines) if lines else "No background tasks."
 
     def drain_notifications(self) -> list:
+        """
+        取出并清空所有待处理的完成通知。
+
+        Returns:
+            通知列表，每个通知包含 task_id, status, command, result
+        """
         """Return and clear all pending completion notifications."""
         with self._lock:
             notifs = list(self._notification_queue)
@@ -113,12 +157,34 @@ BG = BackgroundManager()
 
 # -- Tool implementations --
 def safe_path(p: str) -> Path:
+    """
+    将相对路径解析为绝对路径，并安全检查防止目录遍历攻击。
+
+    Args:
+        p: 相对路径字符串
+
+    Returns:
+        解析后的 Path 对象，确保在 WORKDIR 范围内
+
+    Raises:
+        ValueError: 当路径超出 WORKDIR 范围时
+    """
     path = (WORKDIR / p).resolve()
     if not path.is_relative_to(WORKDIR):
         raise ValueError(f"Path escapes workspace: {p}")
     return path
 
+
 def run_bash(command: str) -> str:
+    """
+    执行 bash 命令（同步阻塞），支持安全性检查和超时控制。
+
+    Args:
+        command: 要执行的 shell 命令
+
+    Returns:
+        命令执行结果，超长截断至 50000 字符
+    """
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
@@ -130,7 +196,18 @@ def run_bash(command: str) -> str:
     except subprocess.TimeoutExpired:
         return "Error: Timeout (120s)"
 
+
 def run_read(path: str, limit: int = None) -> str:
+    """
+    读取文件内容，支持行数限制。
+
+    Args:
+        path: 文件路径
+        limit: 可选，限制返回的前 N 行
+
+    Returns:
+        文件内容字符串，超长截断至 50000 字符
+    """
     try:
         lines = safe_path(path).read_text().splitlines()
         if limit and limit < len(lines):
@@ -139,7 +216,18 @@ def run_read(path: str, limit: int = None) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+
 def run_write(path: str, content: str) -> str:
+    """
+    写入内容到文件，自动创建父目录。
+
+    Args:
+        path: 文件路径
+        content: 要写入的内容
+
+    Returns:
+        成功消息，包含写入字节数
+    """
     try:
         fp = safe_path(path)
         fp.parent.mkdir(parents=True, exist_ok=True)
@@ -148,7 +236,19 @@ def run_write(path: str, content: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+
 def run_edit(path: str, old_text: str, new_text: str) -> str:
+    """
+    在文件中替换指定的文本（仅替换第一次出现）。
+
+    Args:
+        path: 文件路径
+        old_text: 要替换的旧文本
+        new_text: 替换后的新文本
+
+    Returns:
+        成功消息或错误信息
+    """
     try:
         fp = safe_path(path)
         c = fp.read_text()
@@ -186,6 +286,15 @@ TOOLS = [
 
 
 def agent_loop(messages: list):
+    """
+    代理循环：支持后台任务执行和通知注入。
+
+    在每次 LLM 调用前，检查并注入后台任务的完成通知。
+    代理可以继续工作而不阻塞等待长时间运行的命令。
+
+    Args:
+        messages: 对话消息历史列表，会被直接修改
+    """
     while True:
         # Drain background notifications and inject as system message before LLM call
         notifs = BG.drain_notifications()

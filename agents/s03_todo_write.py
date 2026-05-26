@@ -50,10 +50,33 @@ Prefer tools over prose."""
 
 # -- TodoManager: structured state the LLM writes to --
 class TodoManager:
+    """
+    TodoWrite 任务管理器：维护一个结构化的任务列表。
+
+    支持三种状态：pending（待处理）、in_progress（进行中）、completed（已完成）。
+    验证规则：
+    - 最多 20 个待办事项
+    - 同一时间只能有一个 in_progress 状态的任务
+    - 每项必须包含 text 和 status 字段
+    """
+
     def __init__(self):
+        """初始化空的待办列表"""
         self.items = []
 
     def update(self, items: list) -> str:
+        """
+        更新待办列表，验证并存储新的任务项。
+
+        Args:
+            items: 待办事项列表，每项包含 text、status 字段
+
+        Returns:
+            渲染后的待办列表字符串
+
+        Raises:
+            ValueError: 当超过数量限制、状态无效或有多于一个 in_progress 时
+        """
         if len(items) > 20:
             raise ValueError("Max 20 todos allowed")
         validated = []
@@ -75,6 +98,12 @@ class TodoManager:
         return self.render()
 
     def render(self) -> str:
+        """
+        将待办列表渲染为可读字符串格式。
+
+        Returns:
+            格式化后的待办列表，包含完成进度统计
+        """
         if not self.items:
             return "No todos."
         lines = []
@@ -91,12 +120,34 @@ TODO = TodoManager()
 
 # -- Tool implementations --
 def safe_path(p: str) -> Path:
+    """
+    将相对路径解析为绝对路径，并安全检查防止目录遍历攻击。
+
+    Args:
+        p: 相对路径字符串
+
+    Returns:
+        解析后的 Path 对象，确保在 WORKDIR 范围内
+
+    Raises:
+        ValueError: 当路径超出 WORKDIR 范围时
+    """
     path = (WORKDIR / p).resolve()
     if not path.is_relative_to(WORKDIR):
         raise ValueError(f"Path escapes workspace: {p}")
     return path
 
+
 def run_bash(command: str) -> str:
+    """
+    执行 bash 命令，支持安全性检查和超时控制。
+
+    Args:
+        command: 要执行的 shell 命令
+
+    Returns:
+        命令执行结果，超长截断至 50000 字符
+    """
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
@@ -108,7 +159,18 @@ def run_bash(command: str) -> str:
     except subprocess.TimeoutExpired:
         return "Error: Timeout (120s)"
 
+
 def run_read(path: str, limit: int = None) -> str:
+    """
+    读取文件内容，支持行数限制。
+
+    Args:
+        path: 文件路径
+        limit: 可选，限制返回的前 N 行
+
+    Returns:
+        文件内容字符串，超长截断至 50000 字符
+    """
     try:
         lines = safe_path(path).read_text().splitlines()
         if limit and limit < len(lines):
@@ -117,7 +179,18 @@ def run_read(path: str, limit: int = None) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+
 def run_write(path: str, content: str) -> str:
+    """
+    写入内容到文件，自动创建父目录。
+
+    Args:
+        path: 文件路径
+        content: 要写入的内容
+
+    Returns:
+        成功消息，包含写入字节数
+    """
     try:
         fp = safe_path(path)
         fp.parent.mkdir(parents=True, exist_ok=True)
@@ -126,7 +199,19 @@ def run_write(path: str, content: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+
 def run_edit(path: str, old_text: str, new_text: str) -> str:
+    """
+    在文件中替换指定的文本（仅替换第一次出现）。
+
+    Args:
+        path: 文件路径
+        old_text: 要替换的旧文本
+        new_text: 替换后的新文本
+
+    Returns:
+        成功消息或错误信息
+    """
     try:
         fp = safe_path(path)
         content = fp.read_text()
@@ -162,6 +247,15 @@ TOOLS = [
 
 # -- Agent loop with nag reminder injection --
 def agent_loop(messages: list):
+    """
+    代理循环：集成 TodoWrite 提醒机制。
+
+    每当代理连续 3 轮未使用 todo 工具且有待办事项时，
+    自动注入 <reminder> 提示让代理更新进度。
+
+    Args:
+        messages: 对话消息历史列表，会被直接修改
+    """
     rounds_since_todo = 0
     while True:
         # Nag reminder is injected below, alongside tool results

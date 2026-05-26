@@ -63,6 +63,15 @@ TOOLS = [{
 
 
 def run_bash(command: str) -> str:
+    """
+    执行 bash 命令，安全性检查后通过 subprocess 运行。
+
+    Args:
+        command: 要执行的 shell 命令字符串
+
+    Returns:
+        命令的标准输出+标准错误，超长截断至 50000 字符
+    """
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
@@ -79,6 +88,17 @@ def run_bash(command: str) -> str:
 
 # -- The core pattern: a while loop that calls tools until the model stops --
 def agent_loop(messages: list):
+    """
+    核心代理循环：持续调用 LLM 并执行工具，直到模型停止。
+
+    流程：
+    1. 调用 LLM，传入消息历史和可用工具
+    2. 如果 LLM 不再调用工具（stop_reason != "tool_use"），返回结果
+    3. 否则执行每个工具调用，将结果追加到消息历史，继续循环
+
+    Args:
+        messages: 对话消息历史列表，会被直接修改
+    """
     while True:
         response = client.messages.create(
             model=MODEL, system=SYSTEM, messages=messages,

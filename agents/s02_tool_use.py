@@ -39,6 +39,18 @@ SYSTEM = f"You are a coding agent at {WORKDIR}. Use tools to solve tasks. Act, d
 
 
 def safe_path(p: str) -> Path:
+    """
+    将相对路径解析为绝对路径，并安全检查防止目录遍历攻击。
+
+    Args:
+        p: 相对路径字符串
+
+    Returns:
+        解析后的 Path 对象，确保在 WORKDIR 范围内
+
+    Raises:
+        ValueError: 当路径超出 WORKDIR 范围时
+    """
     path = (WORKDIR / p).resolve()
     if not path.is_relative_to(WORKDIR):
         raise ValueError(f"Path escapes workspace: {p}")
@@ -46,6 +58,15 @@ def safe_path(p: str) -> Path:
 
 
 def run_bash(command: str) -> str:
+    """
+    执行 bash 命令，支持安全性检查和超时控制。
+
+    Args:
+        command: 要执行的 shell 命令
+
+    Returns:
+        命令执行结果，超长截断至 50000 字符
+    """
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
@@ -59,6 +80,16 @@ def run_bash(command: str) -> str:
 
 
 def run_read(path: str, limit: int = None) -> str:
+    """
+    读取文件内容，支持行数限制。
+
+    Args:
+        path: 文件路径
+        limit: 可选，限制返回的前 N 行
+
+    Returns:
+        文件内容字符串，超长截断至 50000 字符
+    """
     try:
         text = safe_path(path).read_text()
         lines = text.splitlines()
@@ -70,6 +101,16 @@ def run_read(path: str, limit: int = None) -> str:
 
 
 def run_write(path: str, content: str) -> str:
+    """
+    写入内容到文件，自动创建父目录。
+
+    Args:
+        path: 文件路径
+        content: 要写入的内容
+
+    Returns:
+        成功消息，包含写入字节数
+    """
     try:
         fp = safe_path(path)
         fp.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +121,17 @@ def run_write(path: str, content: str) -> str:
 
 
 def run_edit(path: str, old_text: str, new_text: str) -> str:
+    """
+    在文件中替换指定的文本（仅替换第一次出现）。
+
+    Args:
+        path: 文件路径
+        old_text: 要替换的旧文本
+        new_text: 替换后的新文本
+
+    Returns:
+        成功消息或错误信息
+    """
     try:
         fp = safe_path(path)
         content = fp.read_text()
@@ -92,6 +144,8 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
 
 
 # -- The dispatch map: {tool_name: handler} --
+# 工具分发映射表：将工具名称映射到对应的处理函数
+# 添加新工具只需在此字典中添加一条记录，无需修改核心循环
 TOOL_HANDLERS = {
     "bash":       lambda **kw: run_bash(kw["command"]),
     "read_file":  lambda **kw: run_read(kw["path"], kw.get("limit")),
@@ -112,6 +166,15 @@ TOOLS = [
 
 
 def agent_loop(messages: list):
+    """
+    代理循环：通过工具分发映射执行 LLM 请求的工具调用。
+
+    与 s01 的核心区别：工具通过 TOOL_HANDLERS 分发映射来执行，
+    而非硬编码的 run_bash，实现了工具的可扩展性。
+
+    Args:
+        messages: 对话消息历史列表，会被直接修改
+    """
     while True:
         response = client.messages.create(
             model=MODEL, system=SYSTEM, messages=messages,
